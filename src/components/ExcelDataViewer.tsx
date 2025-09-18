@@ -1,6 +1,21 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import dynamic from 'next/dynamic'
+import stopwordsKo from 'stopwords-ko'
+
+// WordCloudChart를 동적 import로 변경 (SSR 문제 해결)
+const WordCloudChart = dynamic(() => import('./WordCloudChart'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-[350px] bg-gray-50 rounded-lg">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2"></div>
+        <p className="text-gray-600">워드클라우드 로딩 중...</p>
+      </div>
+    </div>
+  )
+})
 
 interface ExcelData {
   [key: string]: any
@@ -53,6 +68,12 @@ interface TextAnalysisStats {
   suggestRatio: number
   neutralRatio: number
   wordCloud: WordCloudData[]
+  sentimentKeywords: {
+    positive: Array<{ word: string; frequency: number }>
+    negative: Array<{ word: string; frequency: number }>
+    suggest: Array<{ word: string; frequency: number }>
+  }
+  sentimentScore: number // -1 (부정) ~ 1 (긍정)
 }
 
 // 긍정 단어 사전
@@ -105,68 +126,192 @@ const suggestWords = [
 
 // 불용어 목록 (일반적인 단어들 제거)
 const stopWords = [
-  '그리고', '그런데', '하지만', '또한', '및', '또', '또는', '혹은', '그러나', '때문에', '때문', '그래서', '그렇지만', '다만',
-  '정말', '매우', '너무', '좀', '더', '등', '등등', '약간', '대체로', '전반적으로', '전체적으로', '일부', '사실', '솔직히',
-  '이다', '입니다', '였다', '있습니다', '했습니다', '합니다', '했다', '하는', '하여', '해서', '하면', '하려고', '하려면',
-  '수', '것', '거', '분', '명', '부분', '사항', '내용', '점', '측면', '경우', '때', '동안', '후', '전', '이후', '이전', '현재', '관련',
-  '에서', '으로', '에게', '와', '과', '를', '을', '은', '는', '이', '가', '에', '도', '만', '보다', '처럼', '같이', '까지', '부터',
-  '및', '등의', '등을', '등도', '또', '또는', '혹은', '각', '별', '등등', '여러', '많은', '많이', '적당히', '서로', '각각',
-  '아주', '굉장히', '정도', '수준', '대해', '대한', '때문에', '바로', '또다시', '다시', '다소', '이번', '지난', '다음', '해당',
-  '예를', '들어', '예시', '예로', '즉', '또한', '또', '혹은', '혹시', '때때로', '보통', '항상', '자주', '가끔', '거의',
-  '저희', '우리', '본인', '본', '귀사', '회사', '팀', '부서', '사내', '현업', '현장', '업무', '사람', '동료', '고객',
-  '아', '어', '음', '음…', '음...', '요', '죠', '네', '예', '응', '허허', 'ㅎㅎ', 'ㅋㅋ', 'ㅠㅠ', '^^', '--', '—', '없습니다', '특별히', '수고하셨습니다', '같습니다'
+ 
+  '특별히', '수고하셨습니다', '같습니다', '감사합니다', '좋았습니다', '주셨습니다', '되었습니다', '좋습니다', '부탁드립니다',
+  '좋겠습니다', '있었습니다', '없어요', '같아요', '있으면', '좋겠음', '좋을것', '유익했습니다', '좋았음', '도움이', '없음', '없습니다'
 ]
 
 // 텍스트 전처리 함수 (불용어 제거 및 특징적인 단어만 추출)
-const preprocessText = (text: string): string[] => {
+// 한국어 텍스트 정규화 및 클린업
+const normalizeText = (text: string): string => {
   return String(text)
     .toLowerCase()
-    .replace(/[^\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F\s]/g, '') // 한글과 공백만 남김
-    .split(/\s+/)
-    .filter(word => 
-      word.length >= 2 && // 2글자 이상
-      word.length <= 10 && // 10글자 이하
-      !stopWords.includes(word) && // 불용어 제거
-      !/^\d+$/.test(word) && // 숫자만 있는 단어 제거
-      !/^[가-힣]{1}$/.test(word) // 1글자 한글 제거
-    )
+    // URL, 이메일, 특수문자 제거
+    .replace(/https?:\/\/[^\s]+/g, '')
+    .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '')
+    .replace(/[^\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F\uAC00-\uD7A3a-zA-Z\s]/g, '')
+    // 중복 공백 제거
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
-// 단어 빈도 계산 함수
+// 바이그램 생성 (문장 경계 내에서)
+const generateBigrams = (tokens: string[]): string[] => {
+  const bigrams: string[] = []
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const bigram = `${tokens[i]} ${tokens[i + 1]}`
+    // 불용어가 포함된 바이그램 제외
+    if (!stopwordsKo.includes(tokens[i]) && !stopwordsKo.includes(tokens[i + 1])) {
+      bigrams.push(bigram)
+    }
+  }
+  return bigrams
+}
+
+// 개선된 한국어 전처리 함수
+const preprocessText = (text: string): string[] => {
+  const normalized = normalizeText(text)
+  
+  // 문장 분리 (한국어 문장 종결 기준)
+  const sentences = normalized.split(/[.!?。]+/).filter(s => s.trim().length > 0)
+  
+  const allTokens: string[] = []
+  
+  sentences.forEach(sentence => {
+    // 단어 토크나이징 (공백 기준, 추후 형태소 분석기로 교체 가능)
+    const tokens = sentence
+      .split(/\s+/)
+      .map(token => token.trim())
+      .filter(token => 
+        token.length >= 2 && // 2글자 이상
+        token.length <= 15 && // 15글자 이하 (복합어 허용)
+        !stopwordsKo.includes(token) && // 한국어 불용어 제거
+        !stopWords.includes(token) && // 커스텀 불용어 제거
+        !/^\d+$/.test(token) && // 숫자만 있는 단어 제거
+        !/^[가-힣]{1}$/.test(token) && // 1글자 한글 제거
+        // 의미 없는 패턴 제거
+        !/^(ㅋ|ㅎ|ㅠ|ㅜ)+$/.test(token) &&
+        !/^[ㄱ-ㅎㅏ-ㅣ]+$/.test(token)
+      )
+    
+    // 유니그램 추가
+    allTokens.push(...tokens)
+    
+    // 바이그램 추가 (문장 내에서만)
+    if (tokens.length >= 2) {
+      const bigrams = generateBigrams(tokens)
+      allTokens.push(...bigrams)
+    }
+  })
+  
+  return allTokens
+}
+
+// 개선된 단어 빈도 계산 함수 (로그 스케일링 포함)
 const calculateWordFrequency = (words: string[]): { [key: string]: number } => {
   const frequency: { [key: string]: number } = {}
+  
+  // 기본 빈도 계산
   words.forEach(word => {
     frequency[word] = (frequency[word] || 0) + 1
   })
-  return frequency
+  
+  // 빈도 필터링 및 가중치 적용
+  const filtered: { [key: string]: number } = {}
+  
+  Object.entries(frequency).forEach(([word, count]) => {
+    // 최소 빈도 조건 (바이그램은 2회 이상, 유니그램은 1회 이상)
+    const minFreq = word.includes(' ') ? 2 : 1
+    
+    if (count >= minFreq) {
+      // 로그 스케일링으로 극값 완화 (참고 자료의 추천)
+      const scaledValue = Math.round(Math.log2(count + 1) * 10)
+      
+      // 바이그램에 가중치 부여 (더 의미있는 구문이므로)
+      const weight = word.includes(' ') ? 1.5 : 1
+      
+      filtered[word] = Math.round(scaledValue * weight)
+    }
+  })
+  
+  return filtered
 }
 
-// 긍정/부정/제안 단어 분류 함수
-const classifyWords = (words: string[]): { positive: number; negative: number; suggest: number; neutral: number } => {
+// 워드클라우드용 상위 단어 추출
+const extractTopWords = (frequency: { [key: string]: number }, topN: number = 100): Array<{ text: string; value: number }> => {
+  return Object.entries(frequency)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN)
+    .map(([text, value]) => ({ text, value }))
+}
+
+// 개선된 감정 분석 함수 (바이그램 포함, 가중치 적용)
+const classifyWords = (words: string[]): { 
+  positive: number; 
+  negative: number; 
+  suggest: number; 
+  neutral: number;
+  positiveWords: string[];
+  negativeWords: string[];
+  suggestWords: string[];
+  neutralWords: string[];
+} => {
   let positive = 0
   let negative = 0
   let suggest = 0
   let neutral = 0
+  
+  const foundPositiveWords: string[] = []
+  const foundNegativeWords: string[] = []
+  const foundSuggestWords: string[] = []
+  const foundNeutralWords: string[] = []
 
   words.forEach(word => {
-    if (positiveWords.includes(word)) {
-      positive++
-    } else if (negativeWords.includes(word)) {
-      negative++
-    } else if (suggestWords.includes(word)) {
-      suggest++
+    // 바이그램에는 가중치 적용 (더 의미있는 구문이므로)
+    const weight = word.includes(' ') ? 2 : 1
+    
+    if (positiveWords.some(pw => word.includes(pw) || pw.includes(word))) {
+      positive += weight
+      if (!foundPositiveWords.includes(word)) foundPositiveWords.push(word)
+    } else if (negativeWords.some(nw => word.includes(nw) || nw.includes(word))) {
+      negative += weight
+      if (!foundNegativeWords.includes(word)) foundNegativeWords.push(word)
+    } else if (suggestWords.some(sw => word.includes(sw) || sw.includes(word))) {
+      suggest += weight
+      if (!foundSuggestWords.includes(word)) foundSuggestWords.push(word)
     } else {
-      neutral++
+      neutral += weight
+      if (!foundNeutralWords.includes(word)) foundNeutralWords.push(word)
     }
   })
 
-  return { positive, negative, suggest, neutral }
+  return { 
+    positive, 
+    negative, 
+    suggest, 
+    neutral,
+    positiveWords: foundPositiveWords,
+    negativeWords: foundNegativeWords,
+    suggestWords: foundSuggestWords,
+    neutralWords: foundNeutralWords
+  }
+}
+
+// 감정별 키워드 추출 함수
+const extractSentimentKeywords = (words: string[], sentimentType: 'positive' | 'negative' | 'suggest'): Array<{ word: string; frequency: number }> => {
+  const targetWords = sentimentType === 'positive' ? positiveWords : 
+                     sentimentType === 'negative' ? negativeWords : suggestWords
+  
+  const sentimentWords = words.filter(word => 
+    targetWords.some(tw => word.includes(tw) || tw.includes(word))
+  )
+  
+  const frequency: { [key: string]: number } = {}
+  sentimentWords.forEach(word => {
+    frequency[word] = (frequency[word] || 0) + 1
+  })
+  
+  return Object.entries(frequency)
+    .map(([word, freq]) => ({ word, frequency: freq }))
+    .sort((a, b) => b.frequency - a.frequency)
+    .slice(0, 10) // 상위 10개
 }
 
 export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps) {
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(10)
   const [searchTerm, setSearchTerm] = useState('')
+  const [searchColumn, setSearchColumn] = useState('전체') // 검색할 컬럼 선택
   const [viewMode, setViewMode] = useState<'raw' | 'summary'>('raw')
   const [selectedWord, setSelectedWord] = useState<{
     word: string
@@ -175,11 +320,21 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
   } | null>(null)
 
   // 검색 필터링
-  const filteredData = data.filter(row =>
-    Object.values(row).some(value =>
-      String(value).toLowerCase().includes(searchTerm.toLowerCase())
-    )
-  )
+  const filteredData = useMemo(() => {
+    if (!searchTerm.trim()) return data
+    
+    return data.filter(row => {
+      if (searchColumn === '전체') {
+        // 전체 컬럼에서 검색
+        return Object.values(row).some(value =>
+          String(value).toLowerCase().includes(searchTerm.toLowerCase())
+        )
+      } else {
+        // 특정 컬럼에서 검색
+        return String(row[searchColumn] || '').toLowerCase().includes(searchTerm.toLowerCase())
+      }
+    })
+  }, [data, searchTerm, searchColumn])
 
   // 페이지네이션 계산
   const totalPages = Math.ceil(filteredData.length / itemsPerPage)
@@ -304,28 +459,29 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
         .map(text => String(text))
       
       if (texts.length > 0) {
-        // 모든 텍스트를 합쳐서 단어 추출
+        // 모든 텍스트를 합쳐서 단어 추출 (개선된 전처리 사용)
         const allWords = texts.flatMap(text => preprocessText(text))
         const wordFrequency = calculateWordFrequency(allWords)
         const classification = classifyWords(allWords)
         
-        // 워드클라우드용 데이터 (의미있는 단어만 선별)
-        const meaningfulWords = Object.entries(wordFrequency)
-          .filter(([word, count]) => 
-            count >= 2 && // 2회 이상 출현
-            word.length >= 3 && // 3글자 이상
-            !word.includes('하다') && // 동사 어미 제거
-            !word.includes('되다') &&
-            !word.includes('이다') &&
-            !word.includes('있다') &&
-            !word.includes('없다')
-          )
-          .sort(([,a], [,b]) => b - a)
-          .slice(0, 15) // 상위 15개만
-          .map(([text, value]) => ({ text, value }))
+        // 워드클라우드용 상위 단어 추출 (바이그램 포함, 로그 스케일링 적용)
+        const meaningfulWords = extractTopWords(wordFrequency, 50) // 상위 50개로 확장
         
         const totalWords = allWords.length
         const uniqueWords = Object.keys(wordFrequency).length
+        
+        // 감정별 키워드 추출
+        const sentimentKeywords = {
+          positive: extractSentimentKeywords(allWords, 'positive'),
+          negative: extractSentimentKeywords(allWords, 'negative'),
+          suggest: extractSentimentKeywords(allWords, 'suggest')
+        }
+        
+        // 감정 점수 계산 (-1 ~ 1)
+        const totalSentimentWords = classification.positive + classification.negative
+        const sentimentScore = totalSentimentWords > 0 
+          ? (classification.positive - classification.negative) / totalSentimentWords 
+          : 0
         
         stats.push({
           column,
@@ -339,7 +495,9 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
           negativeRatio: totalWords > 0 ? (classification.negative / totalWords) * 100 : 0,
           suggestRatio: totalWords > 0 ? (classification.suggest / totalWords) * 100 : 0,
           neutralRatio: totalWords > 0 ? (classification.neutral / totalWords) * 100 : 0,
-          wordCloud: meaningfulWords
+          wordCloud: meaningfulWords,
+          sentimentKeywords,
+          sentimentScore
         })
       }
     })
@@ -362,6 +520,17 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
 
   const handleItemsPerPageChange = (items: number) => {
     setItemsPerPage(items)
+    setCurrentPage(1)
+  }
+
+  // 검색어나 검색 컬럼이 변경될 때 페이지를 1로 리셋
+  const handleSearchChange = (term: string) => {
+    setSearchTerm(term)
+    setCurrentPage(1)
+  }
+
+  const handleSearchColumnChange = (column: string) => {
+    setSearchColumn(column)
     setCurrentPage(1)
   }
 
@@ -401,7 +570,18 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
             <h2 className="text-2xl font-bold text-gray-900">엑셀 데이터 뷰어</h2>
             <p className="text-gray-600 mt-1">파일: {fileName}</p>
             <p className="text-sm text-gray-500">
-              총 {filteredData.length}개 행, {columns.length}개 컬럼
+              {searchTerm ? (
+                <>
+                  검색 결과: {filteredData.length}개 행 / 전체 {data.length}개 행, {columns.length}개 컬럼
+                  {searchColumn !== '전체' && (
+                    <span className="ml-2 px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs">
+                      {searchColumn} 컬럼 검색
+                    </span>
+                  )}
+                </>
+              ) : (
+                <>총 {filteredData.length}개 행, {columns.length}개 컬럼</>
+              )}
             </p>
           </div>
           <div className="flex gap-2 flex-wrap">
@@ -430,14 +610,41 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
 
         {/* 검색 및 필터 */}
         <div className="flex flex-col sm:flex-row gap-4 mb-4">
-          <div className="flex-1">
-            <input
-              type="text"
-              placeholder="데이터 검색..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            />
+          <div className="flex-1 flex gap-2">
+            <div className="w-40">
+              <select
+                value={searchColumn}
+                onChange={(e) => handleSearchColumnChange(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 text-sm"
+              >
+                <option value="전체">전체 검색</option>
+                {columns.map((column, index) => (
+                  <option key={index} value={column}>
+                    {column}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex-1 relative">
+              <input
+                type="text"
+                placeholder={searchColumn === '전체' ? '전체 컬럼에서 검색...' : `${searchColumn} 컬럼에서 검색...`}
+                value={searchTerm}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              />
+              {searchTerm && (
+                <button
+                  onClick={() => handleSearchChange('')}
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                  title="검색어 지우기"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
           </div>
           {viewMode === 'raw' && (
             <div className="flex items-center gap-2">
@@ -743,101 +950,73 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
                 {/* 워드클라우드 */}
                 <div>
                   <h5 className="text-md font-semibold text-gray-700 mb-3">워드클라우드</h5>
-                  <div className="flex flex-wrap gap-3 p-4 bg-white rounded-lg border">
-                    {stat.wordCloud.length > 0 ? (
-                      stat.wordCloud.map((word, wordIndex) => {
-                        const size = Math.max(14, Math.min(28, word.value * 1.5 + 12)) // 14px ~ 28px
-                        const colors = ['text-blue-600', 'text-green-600', 'text-purple-600', 'text-orange-600', 'text-red-600', 'text-indigo-600', 'text-pink-600']
-                        const colorClass = colors[wordIndex % colors.length]
-                        
-                        return (
-                          <span
-                            key={wordIndex}
-                            className={`${colorClass} font-semibold hover:scale-110 transition-all duration-200 cursor-pointer px-2 py-1 rounded-md hover:bg-gray-100 hover:shadow-md`}
-                            style={{ fontSize: `${size}px` }}
-                            title={`${word.text}: ${word.value}회 출현 (클릭하여 상세보기)`}
-                            onClick={() => handleWordClick(word.text, stat.column)}
-                          >
-                            {word.text}
-                          </span>
-                        )
-                      })
-                    ) : (
-                      <div className="text-gray-500 text-sm">의미있는 단어가 충분하지 않습니다.</div>
-                    )}
+                  <div className="bg-white rounded-lg border">
+                    <WordCloudChart
+                      data={stat.wordCloud.map(word => ({
+                        name: word.text,
+                        value: word.value
+                      }))}
+                      height={350}
+                      onWordClick={(word) => handleWordClick(word, stat.column)}
+                      title=""
+                    />
                   </div>
                 </div>
                 
-                {/* 긍정/부정 분석 */}
+                {/* 개선된 감정 분석 */}
                 <div>
-                  <h5 className="text-md font-semibold text-gray-700 mb-3">감정 분석</h5>
+                  <h5 className="text-md font-semibold text-gray-700 mb-4">🎭 감정 분석</h5>
+                  
+                  {/* 감정 점수 표시 */}
+                  <div className="mb-6 p-4 bg-white rounded-lg border">
+                    
+                    {/* 감정 점수 바 */}
+                    <div className="relative">
+                      <div className="w-full bg-gray-200 rounded-full h-4">
+                        <div 
+                          className="h-4 rounded-full transition-all duration-700"
+                          style={{
+                            width: `${Math.abs(stat.sentimentScore) * 50}%`,
+                            marginLeft: stat.sentimentScore >= 0 ? '50%' : `${50 + (stat.sentimentScore * 50)}%`,
+                            backgroundColor: stat.sentimentScore > 0 ? '#10b981' : '#ef4444'
+                          }}
+                        ></div>
+                      </div>
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="w-0.5 h-6 bg-gray-400"></div>
+                      </div>
+                    </div>
+                    <div className="flex justify-between text-xs text-gray-500 mt-1">
+                      <span>부정</span>
+                      <span>중립</span>
+                      <span>긍정</span>
+                    </div>
+                  </div>
                   
                   {/* 통계 요약 */}
-                  <div className="grid grid-cols-2 gap-4 mb-4">
-                    <div className="text-center p-3 bg-white rounded-lg">
+                  <div className="grid grid-cols-2 gap-4 mb-6">
+                    <div className="text-center p-4 bg-gradient-to-br from-green-50 to-green-100 rounded-lg border">
                       <div className="text-2xl font-bold text-green-600">{stat.positiveWords}</div>
-                      <div className="text-sm text-gray-600">긍정 단어</div>
+                      <div className="text-sm text-green-700 font-medium">긍정 단어</div>
+                      <div className="text-xs text-green-600 mt-1">{stat.positiveRatio.toFixed(1)}%</div>
                     </div>
-                    <div className="text-center p-3 bg-white rounded-lg">
+                    <div className="text-center p-4 bg-gradient-to-br from-red-50 to-red-100 rounded-lg border">
                       <div className="text-2xl font-bold text-red-600">{stat.negativeWords}</div>
-                      <div className="text-sm text-gray-600">부정 단어</div>
+                      <div className="text-sm text-red-700 font-medium">부정 단어</div>
+                      <div className="text-xs text-red-600 mt-1">{stat.negativeRatio.toFixed(1)}%</div>
                     </div>
-                    <div className="text-center p-3 bg-white rounded-lg">
+                    <div className="text-center p-4 bg-gradient-to-br from-orange-50 to-orange-100 rounded-lg border">
                       <div className="text-2xl font-bold text-orange-600">{stat.suggestWords}</div>
-                      <div className="text-sm text-gray-600">제안 단어</div>
+                      <div className="text-sm text-orange-700 font-medium">제안 단어</div>
+                      <div className="text-xs text-orange-600 mt-1">{stat.suggestRatio.toFixed(1)}%</div>
                     </div>
-                    <div className="text-center p-3 bg-white rounded-lg">
+                    <div className="text-center p-4 bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg border">
                       <div className="text-2xl font-bold text-blue-600">{stat.uniqueWords}</div>
-                      <div className="text-sm text-gray-600">고유 단어</div>
+                      <div className="text-sm text-blue-700 font-medium">고유 단어</div>
+                      <div className="text-xs text-blue-600 mt-1">총 {stat.totalWords}개</div>
                     </div>
                   </div>
                   
-                  {/* 비율 막대그래프 */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-gray-600">긍정</span>
-                      <span className="text-sm font-medium text-green-600">{stat.positiveRatio.toFixed(1)}%</span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-3">
-                      <div 
-                        className="bg-green-500 h-3 rounded-full transition-all duration-500"
-                        style={{ width: `${stat.positiveRatio}%` }}
-                      ></div>
-                    </div>
-                    
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-gray-600">부정</span>
-                      <span className="text-sm font-medium text-red-600">{stat.negativeRatio.toFixed(1)}%</span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-3">
-                      <div 
-                        className="bg-red-500 h-3 rounded-full transition-all duration-500"
-                        style={{ width: `${stat.negativeRatio}%` }}
-                      ></div>
-                    </div>
-                    
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-gray-600">제안</span>
-                      <span className="text-sm font-medium text-orange-600">{stat.suggestRatio.toFixed(1)}%</span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-3">
-                      <div 
-                        className="bg-orange-500 h-3 rounded-full transition-all duration-500"
-                        style={{ width: `${stat.suggestRatio}%` }}
-                      ></div>
-                    </div>
-                    
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-gray-600">중립</span>
-                      <span className="text-sm font-medium text-gray-600">{stat.neutralRatio.toFixed(1)}%</span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-3">
-                      <div 
-                        className="bg-gray-500 h-3 rounded-full transition-all duration-500"
-                        style={{ width: `${stat.neutralRatio}%` }}
-                      ></div>
-                    </div>
-                  </div>
                   
                   {/* 전체 통계 */}
                   <div className="mt-4 p-3 bg-white rounded-lg">
