@@ -318,6 +318,13 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
     column: string
     details: Array<{ text: string; author: string; rowIndex: number }>
   } | null>(null)
+  
+  const [selectedLevelData, setSelectedLevelData] = useState<{
+    column: string
+    level: string
+    levelValue: number
+    data: Array<{ row: any; rowIndex: number }>
+  } | null>(null)
 
   // 검색 필터링
   const filteredData = useMemo(() => {
@@ -559,6 +566,52 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
   // 모달 닫기
   const closeModal = () => {
     setSelectedWord(null)
+  }
+
+  const closeLevelModal = () => {
+    setSelectedLevelData(null)
+  }
+
+  // 레벨별 데이터 클릭 핸들러
+  const handleLevelClick = (column: string, level: string, levelValue: number) => {
+    console.log(`Clicked: column=${column}, level=${level}, levelValue=${levelValue}`)
+    console.log('Available columns:', columns)
+    console.log('Satisfaction columns:', satisfactionColumns)
+    
+    const levelData: Array<{ row: any; rowIndex: number }> = []
+    
+    filteredData.forEach((row, index) => {
+      const cellValue = row[column]
+      let numericValue = 0
+      
+      // 만족도 컬럼인지 확인 (L~V열)
+      if (satisfactionColumns.includes(column)) {
+        // 만족도 데이터의 경우 텍스트를 숫자로 변환
+        numericValue = convertSatisfactionToNumber(String(cellValue || '').trim())
+        if (index < 3) console.log(`Satisfaction row ${index}: "${cellValue}" -> ${numericValue}`)
+      } else {
+        // 일반 숫자 데이터의 경우 직접 변환
+        const parsed = Number(cellValue)
+        numericValue = isNaN(parsed) ? 0 : Math.round(parsed)
+        if (index < 3) console.log(`Numeric row ${index}: "${cellValue}" -> ${numericValue}`)
+      }
+      
+      if (numericValue === levelValue) {
+        levelData.push({
+          row: row,
+          rowIndex: index + 1
+        })
+      }
+    })
+    
+    console.log(`Found ${levelData.length} items for level ${levelValue}`)
+    
+    setSelectedLevelData({
+      column,
+      level,
+      levelValue,
+      data: levelData
+    })
   }
 
   return (
@@ -816,9 +869,9 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
               <div key={rowIdx} className="mb-8 p-6 bg-gray-50 rounded-lg">
                 <h4 className="text-lg font-semibold text-gray-800 mb-4">{stat.column}</h4>
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
                   {/* 평균 등급 표시 */}
-                  <div className="text-center">
+                  <div className="text-center flex flex-col justify-center">
                     <div className="text-4xl font-bold text-gray-800 mb-2">
                       {stat.average.toFixed(2)}
                     </div>
@@ -844,23 +897,28 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
                   {/* 레벨별 분포 막대그래프 */}
                   <div>
                     <div className="text-sm text-gray-600 mb-3">레벨별 분포</div>
-                    <div className="space-y-2">
+                    <div className="space-y-1">
                       {levelDistribution.map(({ level, count }) => {
                         const maxCount = Math.max(...levelDistribution.map(d => d.count));
                         const barWidth = maxCount > 0 ? (count / maxCount) * 100 : 0;
                         
                         return (
-                          <div key={level} className="flex items-center">
-                            <div className="w-12 text-sm text-gray-600">{level}레벨</div>
+                          <div 
+                            key={level} 
+                            className="flex items-center cursor-pointer hover:bg-gray-100 rounded-lg p-1 transition-colors"
+                            onClick={() => handleLevelClick(stat.column, `${level}레벨`, level)}
+                            title={`${level}레벨 데이터 ${count}개 보기`}
+                          >
+                            <div className="w-12 text-xs text-gray-600">{level}레벨</div>
                             <div className="flex-1 mx-2">
-                              <div className="bg-gray-200 rounded-full h-4 relative">
+                              <div className="bg-gray-200 rounded-full h-2 relative">
                                 <div 
-                                  className="bg-purple-400 h-4 rounded-full transition-all duration-300"
+                                  className="bg-purple-400 h-2 rounded-full transition-all duration-300 hover:bg-purple-500"
                                   style={{ width: `${barWidth}%` }}
                                 ></div>
                               </div>
                             </div>
-                            <div className="w-8 text-sm text-gray-600 text-right">{count}</div>
+                            <div className="w-8 text-xs text-gray-600 text-right">{count}</div>
                           </div>
                         );
                       })}
@@ -1124,6 +1182,120 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
                   document.body.removeChild(link)
                 }}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                CSV 다운로드
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 레벨별 데이터 모달 */}
+      {selectedLevelData && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
+            {/* 모달 헤더 */}
+            <div className="flex items-center justify-between p-6 border-b">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900">
+                  📊 {selectedLevelData.column} - {selectedLevelData.level} 원본 데이터
+                </h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  총 {selectedLevelData.data.length}개의 행이 있습니다.
+                </p>
+              </div>
+              <button
+                onClick={closeLevelModal}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* 모달 내용 */}
+            <div className="p-6 overflow-y-auto max-h-[70vh]">
+              {selectedLevelData.data.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          행 번호
+                        </th>
+                        {columns.map((column, index) => (
+                          <th 
+                            key={index} 
+                            className={`px-3 py-2 text-left text-xs font-medium uppercase tracking-wider ${
+                              column === selectedLevelData.column 
+                                ? 'text-purple-700 bg-purple-50 font-bold' 
+                                : 'text-gray-500'
+                            }`}
+                          >
+                            {column}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {selectedLevelData.data.map((item, index) => (
+                        <tr key={index} className="hover:bg-gray-50">
+                          <td className="px-3 py-2 whitespace-nowrap text-sm font-medium text-blue-600">
+                            {item.rowIndex}
+                          </td>
+                          {columns.map((column, colIndex) => (
+                            <td 
+                              key={colIndex} 
+                              className={`px-3 py-2 text-sm ${
+                                column === selectedLevelData.column 
+                                  ? 'text-purple-800 font-semibold bg-purple-50' 
+                                  : 'text-gray-900'
+                              }`}
+                            >
+                              <div className="max-w-xs truncate" title={String(item.row[column] || '')}>
+                                {String(item.row[column] || '')}
+                              </div>
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <p className="text-gray-500">해당 레벨에 대한 데이터가 없습니다.</p>
+                </div>
+              )}
+            </div>
+
+            {/* 모달 푸터 */}
+            <div className="flex items-center justify-end space-x-3 p-6 border-t bg-gray-50">
+              <button
+                onClick={closeLevelModal}
+                className="px-4 py-2 text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition-colors"
+              >
+                닫기
+              </button>
+              <button
+                onClick={() => {
+                  const headers = ['행번호', ...columns]
+                  const csvData = selectedLevelData.data.map(item => {
+                    const row = [item.rowIndex, ...columns.map(col => `"${String(item.row[col] || '').replace(/"/g, '""')}"`)]
+                    return row.join(',')
+                  }).join('\n')
+                  const blob = new Blob([`${headers.join(',')}\n${csvData}`], { type: 'text/csv;charset=utf-8;' })
+                  const link = document.createElement('a')
+                  const url = URL.createObjectURL(blob)
+                  link.setAttribute('href', url)
+                  link.setAttribute('download', `${selectedLevelData.column}_${selectedLevelData.level}_데이터.csv`)
+                  link.style.visibility = 'hidden'
+                  document.body.appendChild(link)
+                  link.click()
+                  document.body.removeChild(link)
+                }}
+                className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
               >
                 CSV 다운로드
               </button>
