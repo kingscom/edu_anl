@@ -157,8 +157,67 @@ const stopWords = [
   '좋을', '있는', '되는', '많은', '많이', '쉽게', '내용을',
   '특별히', '수고하셨습니다', '같습니다', '감사합니다', '좋았습니다', '주셨습니다', '되었습니다', '좋습니다', '부탁드립니다',
   '좋겠습니다', '있었습니다', '없어요', '같아요', '있으면', '좋겠음', '좋을것', '유익했습니다', '좋았음', '도움이', '없음', '없습니다',
-  '좋을것', '있는것', '되는것', '많은것', '교육', '너무', '좀더', '있어', '대해', '비해', '통해', '좋은', '내용', '관련', '주셔서', '적절한'
+  '좋을것', '있는것', '되는것', '많은것', '교육', '너무', '좀더', '있어', '대해', '비해', '통해', '좋은', '내용', '관련', '주셔서', '적절한', '감사', '좋았', '되었',
+  '좋겠', '대한', '합니', '아직', '주세요', '필요', '활용한', '고생하셨', '이해하기', '때문', '이해', '쉽지', '쉬운', '살짝', '쉽고', '않았', '이미',
+  '적당한', '적절', '적당히', '해주', '전박적', '설명', '부분', '보통', '전반적', '없는', '있음', '아주', '적절함', '않은', '생각', '점이', '진행', '아쉬웠',
+  '수고', '고생', '감사하겠', '특히', '많았으면', '딱히', '했으면', '좋을듯', '이해할', '만족', '주셨', '위주', '설명해', '만족스러웠', '등의', '지금'
 ]
+
+// 의미 없는 어미나 접미사 목록
+const meaninglessEndings = [
+  '습니', '합니', '었습', '았습', '겠습', '했습', '되었', '되어', '었어', '았어', '겠어',
+  '었음', '았음', '겠음', '했음', '되었음', '되어줬', '하셨', '셨습', '였습', '였어',
+  '였음', '였겠', '해주', '해줘', '드리', '드려', '셔서', '해서', '여서', '어서', '해주', '있었', '내용이었', '하지',
+  '어렵지'
+]
+
+// 한국어 조사 및 어미 제거 함수
+const removeParticles = (word: string): string => {
+  // 한국어 조사 패턴들 (끝에 오는 조사들) - 길이 순으로 정렬 (긴 것부터)
+  const particles = [
+    '합니다','습니다', '이든지', '든지', '이든가', '든가', '라도', '조차', '마저', '이나', '이라', '이야', '이다', '더라', '거나', '던가',
+    '에서', '으로', '부터', '까지', '을', '를', '이', '가', '은', '는', '와', '의', '에', '로',
+    '만', '나', '라', '야', '아', '다', '님', '도', '과'
+  ]
+  
+  let cleaned = word
+  
+  // 1단계: 조사 제거 (길이가 긴 조사부터 우선 제거)
+  for (const particle of particles) {
+    if (cleaned.endsWith(particle)) {
+      const withoutParticle = cleaned.slice(0, -particle.length)
+      // 조사를 제거한 후에도 최소 2글자 이상 남아있어야 함
+      if (withoutParticle.length >= 2) {
+        cleaned = withoutParticle
+        break // 첫 번째로 매칭되는 조사만 제거
+      }
+    }
+  }
+  
+  // 2단계: 의미 없는 어미가 남았는지 확인하고 제거하거나 무효화
+  for (const ending of meaninglessEndings) {
+    if (cleaned === ending || cleaned.endsWith(ending)) {
+      // 의미 없는 어미만 남았거나 어미로 끝나는 경우
+      const withoutEnding = cleaned.slice(0, -ending.length)
+      if (withoutEnding.length >= 2) {
+        cleaned = withoutEnding
+        break
+      } else {
+        // 의미 있는 단어가 남지 않으면 빈 문자열 반환 (필터링됨)
+        return ''
+      }
+    }
+  }
+  
+  // 3단계: 최종 검증 - 너무 짧거나 의미 없는 패턴 제거
+  if (cleaned.length < 2 || 
+      /^[ㄱ-ㅎㅏ-ㅣ]+$/.test(cleaned) || 
+      /^(ㅋ|ㅎ|ㅠ|ㅜ|ㅇ)+$/.test(cleaned)) {
+    return ''
+  }
+  
+  return cleaned
+}
 
 // 텍스트 전처리 함수 (불용어 제거 및 특징적인 단어만 추출)
 // 한국어 텍스트 정규화 및 클린업
@@ -174,20 +233,27 @@ const normalizeText = (text: string): string => {
     .trim()
 }
 
-// 바이그램 생성 (문장 경계 내에서)
+// 바이그램 생성 (문장 경계 내에서, 조사 제거 적용)
 const generateBigrams = (tokens: string[]): string[] => {
   const bigrams: string[] = []
   for (let i = 0; i < tokens.length - 1; i++) {
-    const bigram = `${tokens[i]} ${tokens[i + 1]}`
-    // 불용어가 포함된 바이그램 제외
-    if (!stopwordsKo.includes(tokens[i]) && !stopwordsKo.includes(tokens[i + 1])) {
+    // 각 토큰에서 조사 제거 후 바이그램 생성
+    const cleanToken1 = removeParticles(tokens[i])
+    const cleanToken2 = removeParticles(tokens[i + 1])
+    
+    // 빈 문자열이 생성되지 않은 경우만 바이그램 생성
+    if (cleanToken1 && cleanToken2 && 
+        cleanToken1.length >= 2 && cleanToken2.length >= 2 &&
+        !stopwordsKo.includes(cleanToken1) && !stopwordsKo.includes(cleanToken2) &&
+        !stopWords.includes(cleanToken1) && !stopWords.includes(cleanToken2)) {
+      const bigram = `${cleanToken1} ${cleanToken2}`
       bigrams.push(bigram)
     }
   }
   return bigrams
 }
 
-// 개선된 한국어 전처리 함수
+// 개선된 한국어 전처리 함수 (조사 제거 포함)
 const preprocessText = (text: string): string[] => {
   const normalized = normalizeText(text)
   
@@ -201,7 +267,9 @@ const preprocessText = (text: string): string[] => {
     const tokens = sentence
       .split(/\s+/)
       .map(token => token.trim())
+      .map(token => removeParticles(token)) // 조사 제거 적용
       .filter(token => 
+        token && // 빈 문자열 제거 (조사 제거 후 의미 없는 어미만 남은 경우)
         token.length >= 2 && // 2글자 이상
         token.length <= 15 && // 15글자 이하 (복합어 허용)
         !stopwordsKo.includes(token) && // 한국어 불용어 제거
