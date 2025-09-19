@@ -160,7 +160,7 @@ const stopWords = [
   '좋을것', '있는것', '되는것', '많은것', '교육', '너무', '좀더', '있어', '대해', '비해', '통해', '좋은', '내용', '관련', '주셔서', '적절한', '감사', '좋았', '되었',
   '좋겠', '대한', '합니', '아직', '주세요', '필요', '활용한', '고생하셨', '이해하기', '때문', '이해', '쉽지', '쉬운', '살짝', '쉽고', '않았', '이미',
   '적당한', '적절', '적당히', '해주', '전박적', '설명', '부분', '보통', '전반적', '없는', '있음', '아주', '적절함', '않은', '생각', '점이', '진행', '아쉬웠',
-  '수고', '고생', '감사하겠', '특히', '많았으면', '딱히', '했으면', '좋을듯', '이해할', '만족', '주셨', '위주', '설명해', '만족스러웠', '등의', '지금'
+  '수고', '고생', '감사하겠', '특히', '많았으면', '딱히', '했으면', '좋을듯', '이해할', '만족', '주셨', '위주', '설명해', '만족스러웠', '등의', '지금', '도움될', '도움'
 ]
 
 // 의미 없는 어미나 접미사 목록
@@ -1376,6 +1376,31 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
         <div className="p-6">
           {correlationMatrix.columns.length > 0 ? (
             <div className="space-y-8">
+              {/* 정규분포 차트 */}
+              {distributionData.length > 0 && (
+                 <div>
+                   <h5 className="text-md font-semibold text-gray-700 mb-4">📈 각 컬럼별 정규분포 분석</h5>
+                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                     {distributionData.map((distData, index) => (
+                       <div key={index} className="bg-white border border-gray-200 rounded-lg p-4">
+                         <NormalDistributionChart
+                           data={distData}
+                           height={300}
+                         />
+                       </div>
+                     ))}
+                   </div>
+                   <div className="mt-4 text-sm text-gray-600">
+                     <p className="font-medium mb-2">📊 정규성 평가 가이드:</p>
+                     <ul className="list-disc list-inside space-y-1 text-xs">
+                       <li><strong>히스토그램과 정규분포 곡선이 유사:</strong> 데이터가 정규분포에 가까움</li>
+                       <li><strong>좌우 대칭:</strong> 평균 주변으로 데이터가 고르게 분포</li>
+                       <li><strong>종 모양:</strong> 중앙이 높고 양쪽 끝이 낮은 분포</li>
+                       <li><strong>이상치 확인:</strong> 분포에서 크게 벗어난 값들</li>
+                     </ul>
+                   </div>
+                 </div>
+               )}
 
               {/* 상관관계 히트맵 */}
               <div>
@@ -1494,31 +1519,7 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
                  </div>
                </div>
 
-               {/* 정규분포 차트 */}
-               {distributionData.length > 0 && (
-                 <div>
-                   <h5 className="text-md font-semibold text-gray-700 mb-4">📈 각 컬럼별 정규분포 분석</h5>
-                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                     {distributionData.map((distData, index) => (
-                       <div key={index} className="bg-white border border-gray-200 rounded-lg p-4">
-                         <NormalDistributionChart
-                           data={distData}
-                           height={300}
-                         />
-                       </div>
-                     ))}
-                   </div>
-                   <div className="mt-4 text-sm text-gray-600">
-                     <p className="font-medium mb-2">📊 정규성 평가 가이드:</p>
-                     <ul className="list-disc list-inside space-y-1 text-xs">
-                       <li><strong>히스토그램과 정규분포 곡선이 유사:</strong> 데이터가 정규분포에 가까움</li>
-                       <li><strong>좌우 대칭:</strong> 평균 주변으로 데이터가 고르게 분포</li>
-                       <li><strong>종 모양:</strong> 중앙이 높고 양쪽 끝이 낮은 분포</li>
-                       <li><strong>이상치 확인:</strong> 분포에서 크게 벗어난 값들</li>
-                     </ul>
-                   </div>
-                 </div>
-               )}
+               
              </div>
            ) : (
             <div className="text-center py-8">
