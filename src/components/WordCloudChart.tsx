@@ -7,6 +7,7 @@ import 'echarts-wordcloud'
 interface WordCloudData {
   name: string
   value: number
+  frequency?: number // 실제 빈도 (선택적)
 }
 
 interface WordCloudChartProps {
@@ -56,7 +57,9 @@ export default function WordCloudChart({
       tooltip: {
         show: true,
         formatter: function(params: any) {
-          return `<strong>${params.name}</strong><br/>빈도: ${params.value}회`
+          const dataItem = data.find(item => item.name === params.name)
+          const frequency = dataItem?.frequency || params.value
+          return `<strong>${params.name}</strong><br/>빈도: ${frequency}회`
         }
       },
       series: [{
@@ -88,7 +91,8 @@ export default function WordCloudChart({
         },
         data: data.map(item => ({
           name: item.name,
-          value: item.value
+          value: item.value,
+          frequency: item.frequency // 실제 빈도 정보도 전달
         }))
       }]
     }

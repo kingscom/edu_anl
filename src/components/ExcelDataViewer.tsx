@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import dynamic from 'next/dynamic'
 import stopwordsKo from 'stopwords-ko'
 
@@ -12,6 +12,19 @@ const WordCloudChart = dynamic(() => import('./WordCloudChart'), {
       <div className="text-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2"></div>
         <p className="text-gray-600">워드클라우드 로딩 중...</p>
+      </div>
+    </div>
+  )
+})
+
+// NormalDistributionChart를 동적 import로 변경 (SSR 문제 해결)
+const NormalDistributionChart = dynamic(() => import('./NormalDistributionChart'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-[300px] bg-gray-50 rounded-lg">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600 mx-auto mb-2"></div>
+        <p className="text-gray-600">분포도 로딩 중...</p>
       </div>
     </div>
   )
@@ -53,6 +66,7 @@ interface SatisfactionStats {
 interface WordCloudData {
   text: string
   value: number
+  frequency: number // 실제 빈도 추가
 }
 
 interface TextAnalysisStats {
@@ -74,6 +88,20 @@ interface TextAnalysisStats {
     suggest: Array<{ word: string; frequency: number }>
   }
   sentimentScore: number // -1 (부정) ~ 1 (긍정)
+}
+
+interface CorrelationMatrix {
+  columns: string[]
+  matrix: number[][]
+}
+
+interface DistributionData {
+  columnName: string
+  data: number[]
+  mean: number
+  std: number
+  min: number
+  max: number
 }
 
 // 긍정 단어 사전
@@ -227,12 +255,16 @@ const calculateWordFrequency = (words: string[]): { [key: string]: number } => {
   return filtered
 }
 
-// 워드클라우드용 상위 단어 추출
-const extractTopWords = (frequency: { [key: string]: number }, topN: number = 100): Array<{ text: string; value: number }> => {
+// 워드클라우드용 상위 단어 추출 (실제 빈도와 표시용 값 분리)
+const extractTopWords = (frequency: { [key: string]: number }, originalFrequency: { [key: string]: number }, topN: number = 100): Array<{ text: string; value: number; frequency: number }> => {
   return Object.entries(frequency)
     .sort((a, b) => b[1] - a[1])
     .slice(0, topN)
-    .map(([text, value]) => ({ text, value }))
+    .map(([text, value]) => ({ 
+      text, 
+      value, // 표시용 값 (로그 스케일링 적용)
+      frequency: originalFrequency[text] // 실제 빈도
+    }))
 }
 
 // 개선된 감정 분석 함수 (바이그램 포함, 가중치 적용)
@@ -307,6 +339,108 @@ const extractSentimentKeywords = (words: string[], sentimentType: 'positive' | '
     .slice(0, 10) // 상위 10개
 }
 
+// 피어슨 상관계수 계산 함수
+const calculateCorrelation = (x: number[], y: number[]): number => {
+  if (x.length !== y.length || x.length === 0) return 0
+  
+  const n = x.length
+  const sumX = x.reduce((a, b) => a + b, 0)
+  const sumY = y.reduce((a, b) => a + b, 0)
+  const sumXY = x.reduce((sum, xi, i) => sum + xi * y[i], 0)
+  const sumX2 = x.reduce((sum, xi) => sum + xi * xi, 0)
+  const sumY2 = y.reduce((sum, yi) => sum + yi * yi, 0)
+  
+  const numerator = n * sumXY - sumX * sumY
+  const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY))
+  
+  if (denominator === 0) return 0
+  
+  return numerator / denominator
+}
+
+// 상관관계 행렬 계산 함수
+const calculateCorrelationMatrix = (data: ExcelData[], targetColumnIndices: number[], columns: string[]): CorrelationMatrix => {
+  // 유효한 컬럼 인덱스만 필터링
+  const validIndices = targetColumnIndices.filter(idx => idx >= 0 && idx < columns.length)
+  const targetColumns = validIndices.map(idx => columns[idx]).filter(Boolean)
+  const matrix: number[][] = []
+  
+  console.log('상관관계 계산 시작:')
+  console.log('전체 컬럼 수:', columns.length)
+  console.log('요청된 컬럼 인덱스:', targetColumnIndices)
+  console.log('유효한 컬럼 인덱스:', validIndices)
+  console.log('대상 컬럼명:', targetColumns)
+  console.log('전체 데이터 행 수:', data.length)
+  
+  if (targetColumns.length === 0) {
+    console.log('❌ 유효한 컬럼이 없습니다.')
+    return { columns: [], matrix: [] }
+  }
+  
+  // 각 컬럼별 숫자 데이터 추출 (동일한 행 인덱스 기준으로 정렬)
+  const validRowIndices: number[] = []
+  const columnData: number[][] = []
+  
+  // 먼저 모든 대상 컬럼에서 유효한 숫자 데이터가 있는 행들을 찾기
+  data.forEach((row, rowIndex) => {
+    const rowValues = targetColumns.map(column => {
+      const value = row[column]
+      const num = Number(value)
+      return isNaN(num) || value === '' || value === null || value === undefined ? null : num
+    })
+    
+    // 모든 컬럼에 유효한 데이터가 있는 행만 선택
+    if (rowValues.every(val => val !== null)) {
+      validRowIndices.push(rowIndex)
+    }
+  })
+  
+  console.log(`모든 컬럼에 유효한 데이터가 있는 행 개수: ${validRowIndices.length}`)
+  
+  // 각 컬럼별로 유효한 행들의 데이터만 추출
+  targetColumns.forEach((column, index) => {
+    const columnValues = validRowIndices.map(rowIndex => {
+      const value = data[rowIndex][column]
+      const num = Number(value)
+      return num
+    })
+    
+    columnData.push(columnValues)
+    
+    console.log(`컬럼 "${column}" (인덱스 ${validIndices[index]}):`)
+    console.log(`- 유효한 숫자 데이터 개수: ${columnValues.length}`)
+    console.log(`- 샘플 데이터 (처음 5개):`, columnValues.slice(0, 5))
+    console.log(`- 평균: ${columnValues.length > 0 ? (columnValues.reduce((a, b) => a + b, 0) / columnValues.length).toFixed(2) : 'N/A'}`)
+    console.log(`- 표준편차: ${columnValues.length > 0 ? Math.sqrt(columnValues.reduce((sum, val) => sum + Math.pow(val - (columnValues.reduce((a, b) => a + b, 0) / columnValues.length), 2), 0) / columnValues.length).toFixed(2) : 'N/A'}`)
+  })
+  
+  if (validRowIndices.length < 3) {
+    console.log('❌ 상관관계 계산에 필요한 최소 데이터가 부족합니다. (최소 3개 행 필요)')
+    return { columns: [], matrix: [] }
+  }
+  
+  // 상관관계 행렬 계산
+  for (let i = 0; i < targetColumns.length; i++) {
+    matrix[i] = []
+    for (let j = 0; j < targetColumns.length; j++) {
+      if (i === j) {
+        matrix[i][j] = 1 // 자기 자신과의 상관관계는 1
+      } else {
+        const correlation = calculateCorrelation(columnData[i], columnData[j])
+        matrix[i][j] = correlation
+        console.log(`상관관계 ${targetColumns[i]} vs ${targetColumns[j]}: ${correlation.toFixed(3)}`)
+      }
+    }
+  }
+  
+  console.log('최종 상관관계 행렬:', matrix)
+  
+  return {
+    columns: targetColumns,
+    matrix
+  }
+}
+
 export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps) {
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(10)
@@ -325,29 +459,13 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
     levelValue: number
     data: Array<{ row: any; rowIndex: number }>
   } | null>(null)
-
-  // 검색 필터링
-  const filteredData = useMemo(() => {
-    if (!searchTerm.trim()) return data
-    
-    return data.filter(row => {
-      if (searchColumn === '전체') {
-        // 전체 컬럼에서 검색
-        return Object.values(row).some(value =>
-          String(value).toLowerCase().includes(searchTerm.toLowerCase())
-        )
-      } else {
-        // 특정 컬럼에서 검색
-        return String(row[searchColumn] || '').toLowerCase().includes(searchTerm.toLowerCase())
-      }
-    })
-  }, [data, searchTerm, searchColumn])
-
-  // 페이지네이션 계산
-  const totalPages = Math.ceil(filteredData.length / itemsPerPage)
-  const startIndex = (currentPage - 1) * itemsPerPage
-  const endIndex = startIndex + itemsPerPage
-  const currentData = filteredData.slice(startIndex, endIndex)
+  
+  const [statisticFilter, setStatisticFilter] = useState<{
+    column: string
+    type: string
+    condition: (value: number) => boolean
+    description: string
+  } | null>(null)
 
   // 컬럼명 추출
   const columns = Object.keys(data[0] || {})
@@ -363,6 +481,54 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
 
   // W열, X열, Z열 찾기 (23, 24, 26번째)
   const textAnalysisColumns = [columns[22], columns[23], columns[25]].filter(Boolean) // W, X, Z
+
+  // 검색 및 통계 필터링
+  const filteredData = useMemo(() => {
+    let result = data
+    
+    // 먼저 검색 필터 적용
+    if (searchTerm.trim()) {
+      result = result.filter(row => {
+        if (searchColumn === '전체') {
+          // 전체 컬럼에서 검색
+          return Object.values(row).some(value =>
+            String(value).toLowerCase().includes(searchTerm.toLowerCase())
+          )
+        } else {
+          // 특정 컬럼에서 검색
+          return String(row[searchColumn] || '').toLowerCase().includes(searchTerm.toLowerCase())
+        }
+      })
+    }
+    
+    // 통계 필터 적용
+    if (statisticFilter) {
+      result = result.filter(row => {
+        const cellValue = row[statisticFilter.column]
+        let numericValue = 0
+        
+        // 만족도 컬럼인지 확인 (L~V열)
+        if (satisfactionColumns.includes(statisticFilter.column)) {
+          // 만족도 데이터의 경우 텍스트를 숫자로 변환
+          numericValue = convertSatisfactionToNumber(String(cellValue || '').trim())
+        } else {
+          // 일반 숫자 데이터의 경우 직접 변환
+          const parsed = Number(cellValue)
+          numericValue = isNaN(parsed) ? 0 : parsed
+        }
+        
+        return statisticFilter.condition(numericValue)
+      })
+    }
+    
+    return result
+  }, [data, searchTerm, searchColumn, statisticFilter, satisfactionColumns])
+
+  // 페이지네이션 계산
+  const totalPages = Math.ceil(filteredData.length / itemsPerPage)
+  const startIndex = (currentPage - 1) * itemsPerPage
+  const endIndex = startIndex + itemsPerPage
+  const currentData = filteredData.slice(startIndex, endIndex)
 
   // 만족도 텍스트를 숫자로 변환하는 함수
   const convertSatisfactionToNumber = (text: string): number => {
@@ -468,11 +634,18 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
       if (texts.length > 0) {
         // 모든 텍스트를 합쳐서 단어 추출 (개선된 전처리 사용)
         const allWords = texts.flatMap(text => preprocessText(text))
+        
+        // 원본 빈도 계산 (로그 스케일링 적용 전)
+        const originalFrequency: { [key: string]: number } = {}
+        allWords.forEach(word => {
+          originalFrequency[word] = (originalFrequency[word] || 0) + 1
+        })
+        
         const wordFrequency = calculateWordFrequency(allWords)
         const classification = classifyWords(allWords)
         
         // 워드클라우드용 상위 단어 추출 (바이그램 포함, 로그 스케일링 적용)
-        const meaningfulWords = extractTopWords(wordFrequency, 50) // 상위 50개로 확장
+        const meaningfulWords = extractTopWords(wordFrequency, originalFrequency, 50) // 상위 50개로 확장
         
         const totalWords = allWords.length
         const uniqueWords = Object.keys(wordFrequency).length
@@ -511,6 +684,70 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
     
     return stats
   }, [filteredData, textAnalysisColumns])
+
+  // 상관관계 행렬 계산 (3, 4, 5, 8번 컬럼) - 원본 데이터 기준
+  const correlationMatrix = useMemo(() => {
+    const targetIndices = [7, 9, 10, 24]
+    return calculateCorrelationMatrix(filteredData, targetIndices, columns)
+  }, [filteredData, columns])
+
+  // 정규분포 데이터 계산
+  const distributionData = useMemo(() => {
+    const targetIndices = [7, 9, 10, 24]
+    const validIndices = targetIndices.filter(idx => idx >= 0 && idx < columns.length)
+    const targetColumns = validIndices.map(idx => columns[idx]).filter(Boolean)
+    
+    if (targetColumns.length === 0) return []
+    
+    // 모든 컬럼에 유효한 데이터가 있는 행들 찾기
+    const validRowIndices: number[] = []
+    filteredData.forEach((row, rowIndex) => {
+      const rowValues = targetColumns.map(column => {
+        const value = row[column]
+        const num = Number(value)
+        return isNaN(num) || value === '' || value === null || value === undefined ? null : num
+      })
+      
+      if (rowValues.every(val => val !== null)) {
+        validRowIndices.push(rowIndex)
+      }
+    })
+    
+    // 각 컬럼별 분포 데이터 계산
+    return targetColumns.map((column, index) => {
+      const columnValues = validRowIndices.map(rowIndex => {
+        const value = filteredData[rowIndex][column]
+        return Number(value)
+      })
+      
+      if (columnValues.length === 0) return null
+      
+      // 안전한 통계 계산
+      const validValues = columnValues.filter(val => isFinite(val))
+      if (validValues.length < 2) return null
+      
+      const mean = validValues.reduce((sum, val) => sum + val, 0) / validValues.length
+      const variance = validValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / validValues.length
+      const std = Math.sqrt(variance)
+      const min = Math.min(...validValues)
+      const max = Math.max(...validValues)
+      
+      // 추가 유효성 검사
+      if (!isFinite(mean) || !isFinite(std) || !isFinite(min) || !isFinite(max)) {
+        console.warn(`컬럼 ${column}에서 유효하지 않은 통계값이 계산됨`)
+        return null
+      }
+      
+      return {
+        columnName: column,
+        data: validValues, // 유효한 데이터만 전달
+        mean,
+        std,
+        min,
+        max
+      } as DistributionData
+    }).filter(Boolean) as DistributionData[]
+  }, [filteredData, columns])
 
   // Early return after all hooks
   if (!data || data.length === 0) {
@@ -614,6 +851,27 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
     })
   }
 
+  // 통계 필터 핸들러
+  const handleStatisticFilter = (column: string, type: string, condition: (value: number) => boolean, description: string) => {
+    console.log(`Applied filter: column=${column}, type=${type}, description=${description}`)
+    
+    setStatisticFilter({
+      column,
+      type,
+      condition,
+      description
+    })
+    
+    // 페이지를 첫 페이지로 리셋
+    setCurrentPage(1)
+  }
+
+  // 통계 필터 해제 핸들러
+  const clearStatisticFilter = () => {
+    setStatisticFilter(null)
+    setCurrentPage(1)
+  }
+
   return (
     <div className="w-full space-y-6">
       {/* 헤더 */}
@@ -623,12 +881,24 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
             <h2 className="text-2xl font-bold text-gray-900">엑셀 데이터 뷰어</h2>
             <p className="text-gray-600 mt-1">파일: {fileName}</p>
             <p className="text-sm text-gray-500">
-              {searchTerm ? (
+              {searchTerm || statisticFilter ? (
                 <>
-                  검색 결과: {filteredData.length}개 행 / 전체 {data.length}개 행, {columns.length}개 컬럼
-                  {searchColumn !== '전체' && (
+                  필터링 결과: {filteredData.length}개 행 / 전체 {data.length}개 행, {columns.length}개 컬럼
+                  {searchColumn !== '전체' && searchTerm && (
                     <span className="ml-2 px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs">
                       {searchColumn} 컬럼 검색
+                    </span>
+                  )}
+                  {statisticFilter && (
+                    <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-800 rounded-full text-xs">
+                      {statisticFilter.column} - {statisticFilter.description}
+                      <button
+                        onClick={clearStatisticFilter}
+                        className="ml-1 text-purple-600 hover:text-purple-800"
+                        title="통계 필터 해제"
+                      >
+                        ×
+                      </button>
                     </span>
                   )}
                 </>
@@ -875,8 +1145,7 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
                     <div className="text-4xl font-bold text-gray-800 mb-2">
                       {stat.average.toFixed(2)}
                     </div>
-                    <div className="text-sm text-gray-600 mb-3">평균 등급</div>
-                    <div className="flex justify-center space-x-1">
+                    <div className="flex justify-center space-x-1 mb-4">
                       {Array.from({ length: 6 }, (_, i) => (
                         <div
                           key={i}
@@ -891,6 +1160,89 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
                           </svg>
                         </div>
                       ))}
+                    </div>
+                    
+                    {/* 상세 통계 정보 */}
+                    <div className="bg-white border border-gray-200 rounded-lg p-4 text-left">
+                      <div className="space-y-2 text-xs">
+                        {(() => {
+                          // 통계 계산
+                          const sortedValues = [...stat.values].sort((a, b) => a - b)
+                          const n = sortedValues.length
+                          const mean = stat.average
+                          const std = Math.sqrt(stat.values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / (n - 1))
+                          
+                          // 중앙값
+                          const median = n % 2 === 0 
+                            ? (sortedValues[n/2 - 1] + sortedValues[n/2]) / 2 
+                            : sortedValues[Math.floor(n/2)]
+                          
+                          // 사분위수
+                          const q1Index = Math.floor((n - 1) * 0.25)
+                          const q3Index = Math.floor((n - 1) * 0.75)
+                          const q1 = sortedValues[q1Index]
+                          const q3 = sortedValues[q3Index]
+                          
+                          // Top-2-Box (>=4점)와 Bottom-2-Box (<=2점) 계산
+                          // max값의 10%, min값의 10%로 Top/Bottom Box 계산
+                          const max = Math.max(...stat.values);
+                          const min = Math.min(...stat.values);
+                          const range = max - min;
+                          // 10점 만점이면 9, 7점 만점이면 6, 하위는 1
+                          const topThreshold = max - Math.floor(range * 0.2);
+                          const bottomThreshold = min + Math.ceil(range * 0.2) - 1;
+                          const top1Box = (stat.values.filter(v => v >= topThreshold).length / n) * 100;
+                          const bottom1Box = (stat.values.filter(v => v <= bottomThreshold).length / n) * 100;
+                          
+                          // 95% 신뢰구간
+                          const marginOfError = 1.96 * (std / Math.sqrt(n))
+                          const confidenceInterval = {
+                            lower: mean - marginOfError,
+                            upper: mean + marginOfError
+                          }
+                          
+                          return (
+                            <>
+                              <div className="flex justify-between">
+                                <span className="text-gray-600">중앙값:</span>
+                                <span className="font-medium">{median.toFixed(2)}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-gray-600">표준편차:</span>
+                                <span className="font-medium">{std.toFixed(2)}</span>
+                              </div>
+                              <div 
+                                className="flex justify-between cursor-pointer hover:bg-gray-100 rounded p-1 transition-colors"
+                                onClick={() => handleStatisticFilter(stat.column, 'Top-1', (value) => value >= topThreshold, `Top-1 (${topThreshold}점 이상)`)}
+                                title={`Top-1 데이터로 필터링 (${topThreshold}점 이상)`}
+                              >
+                                <span className="text-gray-600">Top-2(♥ {topThreshold} 이상):</span>
+                                <span className="font-medium text-green-600">{top1Box.toFixed(1)}%</span>
+                              </div>
+                              <div 
+                                className="flex justify-between cursor-pointer hover:bg-gray-100 rounded p-1 transition-colors"
+                                onClick={() => handleStatisticFilter(stat.column, 'Bottom-1', (value) => value <= bottomThreshold, `Bottom-2 (${bottomThreshold}점 이하)`)}
+                                title={`Bottom-2 데이터로 필터링 (${bottomThreshold}점 이하)`}
+                              >
+                                <span className="text-gray-600">Bottom-2(♥ {bottomThreshold} 이하):</span>
+                                <span className="font-medium text-red-600">{bottom1Box.toFixed(1)}%</span>
+                              </div>
+                              <div 
+                                className="flex justify-between cursor-pointer hover:bg-gray-100 rounded p-1 transition-colors"
+                                onClick={() => handleStatisticFilter(stat.column, '95% 신뢰구간', (value) => value >= confidenceInterval.lower && value <= confidenceInterval.upper, `95% 신뢰구간 (${confidenceInterval.lower.toFixed(2)}~${confidenceInterval.upper.toFixed(2)})`)}
+                                title={`95% 신뢰구간 데이터로 필터링 (${confidenceInterval.lower.toFixed(2)}~${confidenceInterval.upper.toFixed(2)})`}
+                              >
+                                <span className="text-gray-600">95% 신뢰구간:</span>
+                                <span className="font-medium text-blue-600">{confidenceInterval.lower.toFixed(2)} ~ {confidenceInterval.upper.toFixed(2)}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-gray-600">표본 크기:</span>
+                                <span className="font-medium">{n}개</span>
+                              </div>
+                            </>
+                          )
+                        })()}
+                      </div>
                     </div>
                   </div>
                   
@@ -934,6 +1286,190 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
             <p className="text-gray-500">숫자 데이터가 있는 컬럼이 없습니다.</p>
           </div>
         )}
+      </div>
+
+       {/* 상관관계 분석 표시 */}
+       <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
+        <div className="p-4 bg-orange-50 border-b">
+          <h3 className="text-lg font-semibold text-gray-800 mb-2">🔗 상관관계 분석 (4개 주요 컬럼)</h3>
+          <p className="text-sm text-gray-600">
+            선택된 4개 컬럼 간의 피어슨 상관계수를 계산하여 관계의 강도를 분석합니다. (-1: 완전 음의 상관, 0: 무상관, 1: 완전 양의 상관)
+          </p>
+          <p className="text-xs text-orange-700 mt-1 font-medium">
+            📌 분석 기준: 전체 원본 데이터 ({data.length}개 행)
+          </p>
+          {correlationMatrix.columns.length > 0 && (
+            <p className="text-xs text-green-700 mt-1">
+              ✅ 분석된 컬럼: {correlationMatrix.columns.join(', ')}
+            </p>
+          )}
+        </div>
+        <div className="p-6">
+          {correlationMatrix.columns.length > 0 ? (
+            <div className="space-y-8">
+
+              {/* 상관관계 히트맵 */}
+              <div>
+                <h5 className="text-md font-semibold text-gray-700 mb-4">🔥 상관관계 히트맵</h5>
+                <div className="bg-white border border-gray-300 rounded-lg p-6">
+                  <div className="grid gap-1" style={{ gridTemplateColumns: `1fr repeat(${correlationMatrix.columns.length}, 1fr)` }}>
+                    {/* 헤더 */}
+                    <div></div>
+                    {correlationMatrix.columns.map((col, index) => (
+                      <div
+                        key={index}
+                        className="text-center text-xs font-medium text-gray-700 py-2 truncate"
+                        title={col}
+                      >
+                        {col}
+                      </div>
+                    ))}
+                    
+                    {/* 데이터 */}
+                    {correlationMatrix.columns.map((rowCol, i) => (
+                      <React.Fragment key={i}>
+                        <div className="text-xs font-medium text-gray-700 py-2 pr-2 text-right truncate" title={rowCol}>
+                          {rowCol}
+                        </div>
+                        {correlationMatrix.matrix[i].map((value, j) => {
+                          const absValue = Math.abs(value)
+                          let bgColor = 'bg-gray-100'
+                          let textColor = 'text-gray-800'
+                          let opacity = '50'
+                          
+                          if (i === j) {
+                            bgColor = 'bg-blue-500'
+                            textColor = 'text-white'
+                            opacity = '100'
+                          } else if (value > 0) {
+                            // 양의 상관관계 - 빨간색 계열
+                            if (absValue >= 0.7) {
+                              bgColor = 'bg-red-600'
+                              textColor = 'text-white'
+                              opacity = '100'
+                            } else if (absValue >= 0.5) {
+                              bgColor = 'bg-red-500'
+                              textColor = 'text-white'
+                              opacity = '80'
+                            } else if (absValue >= 0.3) {
+                              bgColor = 'bg-red-400'
+                              textColor = 'text-white'
+                              opacity = '60'
+                            } else {
+                              bgColor = 'bg-red-200'
+                              textColor = 'text-red-800'
+                              opacity = '40'
+                            }
+                          } else {
+                            // 음의 상관관계 - 파란색 계열
+                            if (absValue >= 0.7) {
+                              bgColor = 'bg-blue-600'
+                              textColor = 'text-white'
+                              opacity = '100'
+                            } else if (absValue >= 0.5) {
+                              bgColor = 'bg-blue-500'
+                              textColor = 'text-white'
+                              opacity = '80'
+                            } else if (absValue >= 0.3) {
+                              bgColor = 'bg-blue-400'
+                              textColor = 'text-white'
+                              opacity = '60'
+                            } else {
+                              bgColor = 'bg-blue-200'
+                              textColor = 'text-blue-800'
+                              opacity = '40'
+                            }
+                          }
+                          
+                          return (
+                            <div
+                              key={j}
+                              className={`${bgColor} ${textColor} text-xs font-semibold text-center py-3 px-2 rounded transition-all duration-200 hover:scale-105 cursor-pointer`}
+                              style={{ opacity: opacity === '100' ? 1 : parseInt(opacity) / 100 }}
+                              title={`${rowCol} vs ${correlationMatrix.columns[j]}: ${value.toFixed(3)}`}
+                            >
+                              {value.toFixed(2)}
+                            </div>
+                          )
+                        })}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                  
+                  {/* 색상 범례 */}
+                  <div className="mt-6 flex justify-center">
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-600">-1</span>
+                        <div className="flex">
+                          <div className="w-6 h-4 bg-blue-600"></div>
+                          <div className="w-6 h-4 bg-blue-500 opacity-80"></div>
+                          <div className="w-6 h-4 bg-blue-400 opacity-60"></div>
+                          <div className="w-6 h-4 bg-blue-200 opacity-40"></div>
+                        </div>
+                        <span className="text-xs text-gray-600">음의 상관</span>
+                      </div>
+                      <div className="w-4 h-4 bg-gray-100 border border-gray-300"></div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-600">양의 상관</span>
+                        <div className="flex">
+                          <div className="w-6 h-4 bg-red-200 opacity-40"></div>
+                          <div className="w-6 h-4 bg-red-400 opacity-60"></div>
+                          <div className="w-6 h-4 bg-red-500 opacity-80"></div>
+                          <div className="w-6 h-4 bg-red-600"></div>
+                        </div>
+                        <span className="text-xs text-gray-600">1</span>
+                      </div>
+                    </div>
+                   </div>
+                 </div>
+               </div>
+
+               {/* 정규분포 차트 */}
+               {distributionData.length > 0 && (
+                 <div>
+                   <h5 className="text-md font-semibold text-gray-700 mb-4">📈 각 컬럼별 정규분포 분석</h5>
+                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                     {distributionData.map((distData, index) => (
+                       <div key={index} className="bg-white border border-gray-200 rounded-lg p-4">
+                         <NormalDistributionChart
+                           data={distData}
+                           height={300}
+                         />
+                       </div>
+                     ))}
+                   </div>
+                   <div className="mt-4 text-sm text-gray-600">
+                     <p className="font-medium mb-2">📊 정규성 평가 가이드:</p>
+                     <ul className="list-disc list-inside space-y-1 text-xs">
+                       <li><strong>히스토그램과 정규분포 곡선이 유사:</strong> 데이터가 정규분포에 가까움</li>
+                       <li><strong>좌우 대칭:</strong> 평균 주변으로 데이터가 고르게 분포</li>
+                       <li><strong>종 모양:</strong> 중앙이 높고 양쪽 끝이 낮은 분포</li>
+                       <li><strong>이상치 확인:</strong> 분포에서 크게 벗어난 값들</li>
+                     </ul>
+                   </div>
+                 </div>
+               )}
+             </div>
+           ) : (
+            <div className="text-center py-8">
+              <div className="text-gray-500 space-y-2">
+                <p className="text-lg">⚠️ 상관관계를 계산할 수 없습니다</p>
+                <div className="text-sm space-y-1">
+                  <p>가능한 원인:</p>
+                  <ul className="list-disc list-inside text-left max-w-md mx-auto">
+                    <li>선택된 컬럼 인덱스 [7, 9, 11, 24] 중 일부가 존재하지 않음</li>
+                    <li>해당 컬럼들에 숫자 데이터가 부족함</li>
+                    <li>모든 컬럼에 동시에 유효한 데이터가 있는 행이 3개 미만</li>
+                  </ul>
+                  <p className="mt-3 text-xs text-blue-600">
+                    💡 브라우저 개발자 도구 콘솔에서 상세한 디버깅 정보를 확인하세요.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 만족도 분석 표시 */}
@@ -991,6 +1527,8 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
         )}
       </div>
 
+      
+
       {/* 텍스트 분석 표시 */}
       <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
         <div className="p-4 bg-blue-50 border-b">
@@ -1012,7 +1550,8 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
                     <WordCloudChart
                       data={stat.wordCloud.map(word => ({
                         name: word.text,
-                        value: word.value
+                        value: word.value,
+                        frequency: word.frequency
                       }))}
                       height={350}
                       onWordClick={(word) => handleWordClick(word, stat.column)}
@@ -1093,6 +1632,8 @@ export default function ExcelDataViewer({ data, fileName }: ExcelDataViewerProps
           </div>
         )}
       </div>
+
+     
 
       {/* 단어 상세 정보 모달 */}
       {selectedWord && (

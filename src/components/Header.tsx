@@ -12,33 +12,10 @@ export default function Header() {
         <div className="flex justify-between items-center py-6">
           <div className="flex items-center">
             <Link href="/" className="text-2xl font-bold text-primary-600">
-              Edu Analytics
+              교육과정 분석 플랫폼
             </Link>
           </div>
           
-          <nav className="hidden md:flex space-x-8">
-            <Link href="/" className="text-gray-700 hover:text-primary-600 transition-colors">
-              홈
-            </Link>
-            <Link href="/analytics" className="text-gray-700 hover:text-primary-600 transition-colors">
-              분석
-            </Link>
-            <Link href="/reports" className="text-gray-700 hover:text-primary-600 transition-colors">
-              리포트
-            </Link>
-            <Link href="/settings" className="text-gray-700 hover:text-primary-600 transition-colors">
-              설정
-            </Link>
-          </nav>
-
-          <div className="hidden md:flex items-center space-x-4">
-            <button className="text-gray-700 hover:text-primary-600 transition-colors">
-              로그인
-            </button>
-            <button className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors">
-              시작하기
-            </button>
-          </div>
 
           {/* Mobile menu button */}
           <div className="md:hidden">
